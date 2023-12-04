@@ -65,6 +65,7 @@ def get_controls(control, sc):
             mcond = Image.fromarray(sc.get_depth_map())
         else:
             throw("Unknown controlnet")
+            
         controlnets.append(controlnet)
         mconds.append(mcond)
     return controlnets, mconds
@@ -79,7 +80,7 @@ def run_diffusion(scene , device = "cuda", prompt = None, model = "realistic", c
     controlnets, mconds = get_controls(control, scene)
 
     pipe = StableDiffusionControlNetPipeline.from_pretrained(
-        model_id_or_path, controlnet=controlnets, safety_checker=None, torch_dtype=torch.float16
+        model_id_or_path, controlnet=controlnets, safety_checker=None, torch_dtype=torch.float16, controlnet_conditioning_scale = 1.0,
     )
 
     pipe = pipe.to(device)

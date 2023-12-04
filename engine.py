@@ -154,19 +154,19 @@ class Quad():
 
         if res is None:
             res = 64.0    
-            while (int(np.ceil(p1.dist(p2)/res)) <= 512 and int(np.ceil(p1.dist(p4)/res)) <= 512):
+            while (int(np.ceil(p1.dist(p2)/res)) <= 256 and int(np.ceil(p1.dist(p4)/res)) <= 256):
                 res = res/2
         
         self.res = res
         
         self.shape = (int(np.ceil(p1.dist(p2)/res)), int(np.ceil(p1.dist(p4)/res)))
 
-        while (self.shape[0] > 1024 or self.shape[1] > 1024):
+        while (self.shape[0] > 512 or self.shape[1] > 512):
             res = res*2
             self.shape = (int(np.ceil(p1.dist(p2)/res)), int(np.ceil(p1.dist(p4)/res)))
 
-        assert(self.shape[0] <= 1024)
-        assert(self.shape[1] <= 1024)
+        assert(self.shape[0] <= 512)
+        assert(self.shape[1] <= 512)
         
         self.img = np.zeros((self.shape[0], self.shape[1],3), dtype = np.uint8 )
 
@@ -644,6 +644,8 @@ class Scene():
     def set_image(self, image):
         self.image = image
 
+
+
     def transition(self, scenes, intensity = 1.0):
         if isinstance(scenes, Scene):
             scenes = [scenes]
@@ -653,6 +655,73 @@ class Scene():
 
         for original_scene in scenes:
             unstamped_img = original_scene.unstamp(intensity = intensity, verbose = False)
+
+    def connect(self, sc_dst):            
+        shape_x = self.resolution[0]
+        shape_y = self.resolution[1]
+
+        x = np.arange(0,shape_x)
+        y = np.arange(0,shape_y)
+
+        yy, xx = np.meshgrid(y,x)
+
+        ptr_img = np.zeros((shape_x, shape_y,3), dtype = np.uint8)
+
+        src_idx = 1
+
+        ptr_img[:,:,0] = src_idx
+        ptr_img[:,:,1] = np.round(xx) % 256
+        ptr_img[:,:,2] = np.round(yy) % 256
+
+        self.stamp(ptr_img, verbose = False)
+
+        src_idx = 0
+        unstamped_img = sc_dst.unstamp(intensity = 1.0, verbose = False)
+
+        ## list of non-zero pixels in the unstamped_img
+        list_of_connections = np.where(unstamped_img[:,:,0])
+
+        src_x = (unstamped_img[:,:,1])[list_of_connections]
+        src_y = (unstamped_img[:,:,2])[list_of_connections]
+
+        dst_x = list_of_connections[0]
+        dst_y = list_of_connections[1]      
+            
+        dst = np.array([dst_x,dst_y])        
+        src = np.array([src_x,src_y])
+            
+        ptr_img = np.zeros((shape_x, shape_y,3), dtype = np.uint8)
+        src_idx = 1
+        ptr_img[:,:,0] = src_idx
+        ptr_img[:,:,1] = np.round(xx) // 256
+        ptr_img[:,:,2] = np.round(yy) // 256
+        self.stamp(ptr_img, verbose = False)
+        
+        src_idx = 0
+
+        
+        unstamped_img = sc_dst.unstamp(intensity = 1.0, verbose = False)
+        
+        ## list of non-zero pixels in the unstamped_img
+        list_of_connections = np.where(unstamped_img[:,:,0])
+
+        src_x = (unstamped_img[:,:,1])[list_of_connections]*256
+        src_y = (unstamped_img[:,:,2])[list_of_connections]*256
+
+        dst_x = list_of_connections[0]
+        dst_y = list_of_connections[1]   
+
+        dst2 = np.array([dst_x,dst_y])        
+
+        src2 = np.array([src_x,src_y])
+        assert(np.all(src.shape == src2.shape))
+        assert(np.all(dst == dst2))
+
+        src = src + src2
+
+        return src, dst
+
+
 
 
 def color_dist(a,b):
@@ -669,7 +738,6 @@ def random_color(r=None,g=None,b=None):
 #         b = 255*np.random.uniform()
         
     return  (r,g,b)
-
 
 def gen_farm():
     skretch = Sketch3d()
@@ -698,6 +766,7 @@ def add_skies(skretch, segments=1, Z = 300,color = (175,175,255)):
             skretch.add_flat(flat)
 
     return skretch
+
 
 
 
