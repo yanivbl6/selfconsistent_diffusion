@@ -24,6 +24,8 @@ from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer, CLIPV
 
 from diffusers.pipelines.controlnet import MultiControlNetModel
 
+import matplotlib.pyplot as plt
+
 def is_compiled_module(module):
     return hasattr(module, "_orig_mod")
 
@@ -131,26 +133,54 @@ class MultiDiffusion(nn.Module):
         self.tokenizer = pipe.tokenizer
         self.text_encoder = pipe.text_encoder
         self.unet = pipe.unet
-        self.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
+        # self.scheduler1 = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
+        # self.scheduler2 = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
+
+        self.scheduler1 = DDIMScheduler.from_pretrained(model_key, subfolder="scheduler")
+        self.scheduler2 = DDIMScheduler.from_pretrained(model_key, subfolder="scheduler")
+
+
         self.pipe = pipe
         self.controlnets = controlnets
 
 
         print(f'[INFO] pairing scenes')
-        self.map1,self.map2 = scene1.connect(scene2)
-        ## convert np to torch, and move to device
-        self.map1 = torch.tensor(self.map1.astype(np.int), dtype = torch.long).to(self.device)
-        self.map2 = torch.tensor(self.map2.astype(np.int), dtype = torch.long).to(self.device)
+        map1,map2 = scene1.connect(scene2)
 
+        map1 = map1.astype(np.int)
+        map2 = map2.astype(np.int)
+        
+        ## convert np to torch, and move to device
         ## the map is for the image space, so we need to convert it to the latent space (Is it how it is done?)
-        self.map1 = self.map1 // 8
-        self.map2 = self.map2 // 8
+        map1 = map1 // 8
+        map2 = map2 // 8
+
+        new_map1 = []
+        new_map2 = []
+        for i in range(map1.shape[1]):
+            val1 = tuple(map1[:,i])
+            val2 = tuple(map2[:,i])
+            if not val1 in new_map1 and not val2 in new_map2:
+                new_map1.append(val1)
+                new_map2.append(val2)
+                
+        map1 = np.asarray(new_map1).transpose()
+        map2 = np.asarray(new_map2).transpose()
+
+        self.map1 = torch.tensor(map1, dtype = torch.long).to(self.device)
+        self.map2 = torch.tensor(map2, dtype = torch.long).to(self.device)
+
+
+        ##eliminate repeating indexes from self.map1:
+        ##self.map1 = torch.unique(self.map1, dim = 1)
+
 
         # self.vae = AutoencoderKL.from_pretrained(model_key, subfolder="vae").to(self.device)
         # self.tokenizer = CLIPTokenizer.from_pretrained(model_key, subfolder="tokenizer")
         # self.text_encoder = CLIPTextModel.from_pretrained(model_key, subfolder="text_encoder").to(self.device)
         # self.unet = UNet2DConditionModel.from_pretrained(model_key, subfolder="unet").to(self.device)
-        # self.scheduler = DDIMScheduler.from_pretrained(model_key, subfolder="scheduler")
+        
+        
 
         print(f'[INFO] loaded stable diffusion!')
 
@@ -234,6 +264,8 @@ class MultiDiffusion(nn.Module):
         control_guidance_start: Union[float, List[float]] = 0.0,
         control_guidance_end: Union[float, List[float]] = 1.0,
         pairing_strength: float = 0.1,
+        max_pairing_steps: int = -1,
+        display_every: int = -1,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -314,6 +346,12 @@ class MultiDiffusion(nn.Module):
             control_guidance_end (`float` or `List[float]`, *optional*, defaults to 1.0):
                 The percentage of total steps at which the controlnet stops applying.
             pairing_strength (`float`, *optional*, defaults to 0.1):
+                The strength of the pairing between the two scenes.
+            max_pairing_steps (`int`, *optional*, defaults to -1):
+                The maximum number of steps for pairing. If -1, it will be set to `num_inference_steps//2`.
+            display_every (`int`, *optional*, defaults to -1):
+                The frequency at which the generated images will be displayed. If -1, it will be set to
+                `num_inference_steps//10`.
 
         Examples:
 
@@ -324,6 +362,9 @@ class MultiDiffusion(nn.Module):
             list of `bool`s denoting whether the corresponding generated image likely represents "not-safe-for-work"
             (nsfw) content, according to the `safety_checker`.
         """
+
+        if max_pairing_steps < 0:
+            max_pairing_steps = num_inference_steps//2
 
         controlnet = self.pipe.controlnet._orig_mod if is_compiled_module(self.pipe.controlnet) else self.pipe.controlnet
 
@@ -392,11 +433,15 @@ class MultiDiffusion(nn.Module):
         width = self.cond_img1[0].shape[-1]
 
         # 5. Prepare timesteps
-        self.scheduler.set_timesteps(num_inference_steps, device=device)
-        timesteps = self.scheduler.timesteps
+        self.scheduler1.set_timesteps(num_inference_steps, device=device)
+        self.scheduler2.set_timesteps(num_inference_steps, device=device)
+
+        timesteps = self.scheduler1.timesteps
+
+
 
         # 6. Prepare latent variables
-        num_channels_latents = self.unet.config.in_channels
+        num_channels_latents = self.pipe.unet.config.in_channels
         latents1 = self.prepare_latents(
             batch_size * num_images_per_prompt,
             num_channels_latents,
@@ -432,27 +477,37 @@ class MultiDiffusion(nn.Module):
             controlnet_keep.append(keeps[0] if isinstance(controlnet, ControlNetModel) else keeps)
 
         # 8. Denoising loop
-        num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
+        num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler1.order
+
         with self.pipe.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
 
+                k = i % 2
                 for k in range(2):
                     if k == 0:
-                        latents = latents1
+                        latents = latents1.clone()
                         image = self.cond_img1
+                        scheduler = self.scheduler1
                     else:
-                        latents = latents2
+                        latents = latents2.clone()
                         image = self.cond_img2
+                        scheduler = self.scheduler2
+
+
+                    ##if latents has nan:
+                    if torch.isnan(latents).any():
+                        import pdb; pdb.set_trace()
+                    ##import pdb; pdb.set_trace()
 
                     # expand the latents if we are doing classifier free guidance
                     latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-                    latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+                    latent_model_input = scheduler.scale_model_input(latent_model_input, t)
 
                     # controlnet(s) inference
                     if guess_mode and do_classifier_free_guidance:
                         # Infer ControlNet only for the conditional batch.
                         control_model_input = latents
-                        control_model_input = self.scheduler.scale_model_input(control_model_input, t)
+                        control_model_input = scheduler.scale_model_input(control_model_input, t)
                         controlnet_prompt_embeds = prompt_embeds.chunk(2)[1]
                     else:
                         control_model_input = latent_model_input
@@ -481,7 +536,7 @@ class MultiDiffusion(nn.Module):
                         mid_block_res_sample = torch.cat([torch.zeros_like(mid_block_res_sample), mid_block_res_sample])
 
                     # predict the noise residual
-                    noise_pred = self.unet(
+                    noise_pred = self.pipe.unet(
                         latent_model_input,
                         t,
                         encoder_hidden_states=prompt_embeds,
@@ -491,52 +546,77 @@ class MultiDiffusion(nn.Module):
                         return_dict=False,
                     )[0]
 
+
+
+
                     # perform guidance
                     if do_classifier_free_guidance:
                         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
                     # compute the previous noisy sample x_t -> x_t-1
-                    latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
+                    latents = scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
 
                     if k == 0:
-                        latents1 = latents
+                        latents1 = latents.clone()
                     else:
-                        latents2 = latents
-
-                    # call the callback, if provided
+                        latents2 = latents.clone()
 
 
-                ##import pdb; pdb.set_trace()
+                    del latents
 
 
                 if pairing_strength > 0:
+                    
+                    if i < max_pairing_steps:
+                        alpha = pairing_strength
+                    else:
+                        alpha = pairing_strength * (1 - (i - max_pairing_steps) / (num_inference_steps - max_pairing_steps))
+
+
                     diff = (latents1[:,:,self.map1[0],self.map1[1]] - latents2[:,:,self.map2[0],self.map2[1]])/2
 
                     # update the latent
-                    latents1[:,:,self.map1[0],self.map1[1]] = latents1[:,:,self.map1[0],self.map1[1]] + diff * pairing_strength
-                    latents2[:,:,self.map2[0],self.map2[1]] = latents2[:,:,self.map2[0],self.map2[1]] - diff * pairing_strength
+                    latents1[:,:,self.map1[0],self.map1[1]] = latents1[:,:,self.map1[0],self.map1[1]] - diff * alpha
+                    latents2[:,:,self.map2[0],self.map2[1]] = latents2[:,:,self.map2[0],self.map2[1]] + diff * alpha
 
-                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
+                # call the callback, if provided
+                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler1.order == 0):
                     progress_bar.update()
-                    if callback is not None and i % callback_steps == 0:
-                        callback(i, t, latents1)
-                        callback(i, t, latents2)
+                    # if callback is not None and i % callback_steps == 0:
+                    #     callback(i, t, latents1)
+                    #     callback(i, t, latents2)
+
+                if display_every > 0 and i % display_every == 0:
+
+                    tmp_image1 = self.pipe.vae.decode(latents1 / self.vae.config.scaling_factor, return_dict=False)[0]
+                    ##_, has_nsfw_concept = self.pipe.run_safety_checker(image1, device, prompt_embeds.dtype)
+                    tmp_image2 = self.pipe.vae.decode(latents2 / self.vae.config.scaling_factor, return_dict=False)[0]
+                    do_denormalize = [True] * tmp_image1.shape[0]
+                    tmp_image1 = self.pipe.image_processor.postprocess(tmp_image1, output_type=output_type, do_denormalize=do_denormalize)
+                    tmp_image2 = self.pipe.image_processor.postprocess(tmp_image2, output_type=output_type, do_denormalize=do_denormalize)
+
+                    fig, ax= plt.subplots(1,2)
+                                        
+                    ax[0].imshow(tmp_image1[0])
+                    ax[1].imshow(tmp_image2[0])
 
 
+                    plt.show()
 
         # If we do sequential model offloading, let's offload unet and controlnet
         # manually for max memory savings
         if hasattr(self.pipe, "final_offload_hook") and self.pipe.final_offload_hook is not None:
-            self.unet.to("cpu")
+            self.pipe.unet.to("cpu")
             self.pipe.controlnet.to("cpu")
             torch.cuda.empty_cache()
 
         if not output_type == "latent":
-            image1 = self.vae.decode(latents1 / self.vae.config.scaling_factor, return_dict=False)[0]
-            image1, has_nsfw_concept = self.pipe.run_safety_checker(image1, device, prompt_embeds.dtype)
-            image2 = self.vae.decode(latents2 / self.vae.config.scaling_factor, return_dict=False)[0]
-            image2, has_nsfw_concept = self.pipe.run_safety_checker(image2, device, prompt_embeds.dtype)
+            image1 = self.pipe.vae.decode(latents1 / self.vae.config.scaling_factor, return_dict=False)[0]
+            ##_, has_nsfw_concept = self.pipe.run_safety_checker(image1, device, prompt_embeds.dtype)
+            image2 = self.pipe.vae.decode(latents2 / self.vae.config.scaling_factor, return_dict=False)[0]
+            ##_, has_nsfw_concept = self.pipe.run_safety_checker(image2, device, prompt_embeds.dtype)
+            has_nsfw_concept = None
         else:
             image1 = latents1
             image2 = latents2
