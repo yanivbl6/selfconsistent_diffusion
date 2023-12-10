@@ -80,7 +80,7 @@ def run_diffusion(scene , device = "cuda", prompt = None, model = "realistic", c
     controlnets, mconds = get_controls(control, scene)
 
     pipe = StableDiffusionControlNetPipeline.from_pretrained(
-        model_id_or_path, controlnet=controlnets, safety_checker=None, torch_dtype=torch.float16, controlnet_conditioning_scale = 1.0,
+        model_id_or_path, controlnet=controlnets, safety_checker=None, torch_dtype=torch.float16
     )
 
     pipe = pipe.to(device)
@@ -105,8 +105,9 @@ def present(src, results):
     assert(n==len(src))
     m = len(src[0]) + 1
 
-    fig, ax= plt.subplots(n,m, figsize=(25*n, 25*m))
-    
+    fig, ax= plt.subplots(n,m, figsize=(16, int(16*(n/m))))
+    ##fig, ax= plt.subplots(n,m)
+
     
     if n==1:
         ax = [ax]
@@ -121,7 +122,9 @@ def present(src, results):
         ax[i][m-1].imshow(results[i])
         ax[i][m-1].grid(False)
         ax[i][m-1].axis('off')
-    plt.savefig("images/prespective_change_with_diffusion.png")
+    ## save tight
+    plt.savefig("images/prespective_change_with_diffusion.pdf", bbox_inches='tight')
+    plt.savefig("images/prespective_change_with_diffusion.png", bbox_inches='tight')
     plt.show()
 
 

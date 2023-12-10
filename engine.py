@@ -285,7 +285,8 @@ class Quad():
             mapping = np.where(np.expand_dims(new_mapping1[:,:,0] == 0,2), mapping, new_mapping1 + new_mapping2*256)
 
         
-        if not normal_map is None:
+        if not normal_map is None and self.v_norm is not None:
+            
             dv = (self.v_norm - direction).normalize().numpy()   
             dv = np.round((dv+1)*128)
             
@@ -325,7 +326,7 @@ class Quad():
         
         return image, mapping, normal_map, depth_map
 
-    def unstamp(self, image, pov, direction, vision_angle, intensity, verbose):
+    def unstamp(self, image, pov, direction, vision_angle, intensity, verbose, decomp = cv2.DECOMP_SVD):
         resolution_x = image.shape[0]
         resolution_y = image.shape[1]
 
@@ -349,14 +350,57 @@ class Quad():
 
         pts2 = np.float32([p1 , p2, p3, p4])
 
-        transformation_matrix = cv2.getPerspectiveTransform(pts1,pts2, cv2.DECOMP_SVD)
-        
+        transformation_matrix = cv2.getPerspectiveTransform(pts1,pts2, decomp)
+        ##transformation_matrix = cv2.getPerspectiveTransform(pts1,pts2)
         unstamped_img = cv2.warpPerspective(self.img, transformation_matrix, (resolution_x, resolution_y))
 
         ## image only takes non zero values from tar
         image = np.where(np.expand_dims(unstamped_img[:,:,0] == 0,2), image, unstamped_img)
 
         return image
+
+
+    def interpolate(self, k = 1, verbose = False):
+
+        if k == 0:
+            return
+
+        current_img = self.img
+        ## I need to set all the uninitialized pixels to the nearest initialized pixel in range of k
+
+        ## get the list of uninitialized pixels:
+
+        if verbose:
+            plt.imshow(current_img)
+            plt.show()
+
+        ##import pdb; pdb.set_trace()
+
+        list_of_uninitialized_pixels = np.where(np.sum(current_img[:,1:,:], axis = 2) == 0)
+        image_neighbour = current_img[:,0:-1,:]
+        current_img[:,1:,:][list_of_uninitialized_pixels] = image_neighbour[list_of_uninitialized_pixels]
+
+        list_of_uninitialized_pixels = np.where(np.sum(current_img[1:,:,:], axis = 2) == 0)
+        image_neighbour = current_img[0:-1,:,:]
+        current_img[1:,:,:][list_of_uninitialized_pixels] = image_neighbour[list_of_uninitialized_pixels]
+
+        list_of_uninitialized_pixels = np.where(np.sum(current_img[:-1,:,:], axis = 2) == 0)
+        image_neighbour = current_img[1:,:,:]
+        current_img[:-1,:,:][list_of_uninitialized_pixels] = image_neighbour[list_of_uninitialized_pixels]
+
+        list_of_uninitialized_pixels = np.where(np.sum(current_img[:,-1:,:], axis = 2) == 0)
+        image_neighbour = current_img[:,1:,:]
+        current_img[:,-1:,:][list_of_uninitialized_pixels] = image_neighbour[list_of_uninitialized_pixels]
+
+        if verbose:
+            plt.imshow(current_img)
+            plt.show()
+
+        self.img = current_img
+        
+        self.interpolate(k-1, verbose = verbose)
+
+
 
 
 class Box():
@@ -520,7 +564,7 @@ class Scene():
             # plt.imshow(self.depth_map)
             # plt.show()
         
-    def stamp(self, image, verbose = False):
+    def stamp(self, image, interpolate_k = 0, verbose = False):
         ## get unique ids from mapping:
         ids = np.unique(self.mapping[:,:,0])
 
@@ -567,16 +611,39 @@ class Scene():
                     
                     quad.img[pos_x,pos_y,:] = color
             
+                
+
             if verbose:
                 plt.imshow(quad.img)
                 plt.show()
                 plt.imshow(image_cp)
                 plt.show()
         
+            quad.interpolate(k = interpolate_k, verbose = verbose)
+
+    # def interpolate(self):
+    #     ## get unique ids from mapping:
+    #     ids = np.unique(self.mapping[:,:,0])
+
+    #     for id in ids:
+    #         if id == 0:
+    #             continue
+
+    #         for quad in self.quads:
+    #             if quad.id == id:
+    #                 break
+
+    #         current_img = quad.img
+    #         ## I need to set all the uninitialized pixels to the nearest initialized pixel in range of k
+
+    #         ## get the list of uninitialized pixels:
+    #         list_of_uninitialized_pixels = np.where(np.sum(current_img, axis = 2) == 0)
+
+            
 
                 
                 
-    def unstamp(self, intensity = 1.0, verbose = False):
+    def unstamp(self, intensity = 1.0, verbose = False, decomp = cv2.DECOMP_SVD):
         vision_angle = self.vision_angle
         direction = self.direction
 
@@ -589,7 +656,7 @@ class Scene():
 
         color = None
         for quad in self.quads:
-            image = quad.unstamp(image, pov, direction, vision_angle, intensity = intensity, verbose = verbose)
+            image = quad.unstamp(image, pov, direction, vision_angle, intensity = intensity, verbose = verbose, decomp = decomp)
             
         if verbose:
             plt.imshow(image)
@@ -656,7 +723,7 @@ class Scene():
         for original_scene in scenes:
             unstamped_img = original_scene.unstamp(intensity = intensity, verbose = False)
 
-    def connect(self, sc_dst):            
+    def connect(self, sc_dst, verbose = False, decomp = cv2.DECOMP_SVD, interpolate_k = 0):            
         shape_x = self.resolution[0]
         shape_y = self.resolution[1]
 
@@ -665,18 +732,21 @@ class Scene():
 
         yy, xx = np.meshgrid(y,x)
 
+        xx = np.round(xx)
+        yy = np.round(yy)
+
         ptr_img = np.zeros((shape_x, shape_y,3), dtype = np.uint8)
 
         src_idx = 1
 
         ptr_img[:,:,0] = src_idx
-        ptr_img[:,:,1] = np.round(xx) % 256
-        ptr_img[:,:,2] = np.round(yy) % 256
+        ptr_img[:,:,1] = xx % 256
+        ptr_img[:,:,2] = yy % 256
 
-        self.stamp(ptr_img, verbose = False)
+        self.stamp(ptr_img, verbose = verbose, interpolate_k = interpolate_k)
 
-        src_idx = 0
-        unstamped_img = sc_dst.unstamp(intensity = 1.0, verbose = False)
+        unstamped_img = sc_dst.unstamp(intensity = 1.0, verbose = verbose, decomp = decomp)
+
 
         ## list of non-zero pixels in the unstamped_img
         list_of_connections = np.where(unstamped_img[:,:,0])
@@ -693,17 +763,25 @@ class Scene():
         ptr_img = np.zeros((shape_x, shape_y,3), dtype = np.uint8)
         src_idx = 1
         ptr_img[:,:,0] = src_idx
-        ptr_img[:,:,1] = np.round(xx) // 256
-        ptr_img[:,:,2] = np.round(yy) // 256
-        self.stamp(ptr_img, verbose = False)
+        ptr_img[:,:,1] = xx // 256
+        ptr_img[:,:,2] = yy // 256
+
+        self.stamp(ptr_img, verbose = False, interpolate_k = interpolate_k)
         
         src_idx = 0
 
         
-        unstamped_img = sc_dst.unstamp(intensity = 1.0, verbose = False)
+        unstamped_img = sc_dst.unstamp(intensity = 1.0, verbose = False, decomp = decomp)
         
+
         ## list of non-zero pixels in the unstamped_img
         list_of_connections = np.where(unstamped_img[:,:,0])
+
+        if verbose:
+            tagged_img = np.where(unstamped_img[:,:,0], 255, 0)
+            plt.imshow(tagged_img)
+            plt.show()
+
 
         src_x = (unstamped_img[:,:,1])[list_of_connections]*256
         src_y = (unstamped_img[:,:,2])[list_of_connections]*256
@@ -762,13 +840,30 @@ def add_skies(skretch, segments=1, Z = 300,color = (175,175,255)):
                         Point(-10+size*(i+1),-10+size*(j+1),Z), 
                         Point(-10+size*i,-10+size*(j+1),Z), 
                         color = color)
+            
+            flat.v_norm = None
 
             skretch.add_flat(flat)
-
     return skretch
 
 
+def gen_house():
+    """
+    Generates a 3D sketch of a city with random buildings and returns it.
 
+    Args:
+    - num_of_background_buildings (int): The number of random buildings to generate in the background. Default is 100.
+
+    Returns:
+    - skretch (Sketch3d): A 3D sketch of the city with the generated buildings.
+    """
+    skretch = Sketch3d()
+
+    skretch.add_box(Box(Point(40,130,0), 15, 15, 30, color = random_color(None,None,None)))
+        
+    return skretch
+
+    
 
 
 def gen_metropolis(num_of_background_buildings= 100):
@@ -823,7 +918,7 @@ def gen_metropolis(num_of_background_buildings= 100):
         d = np.random.uniform()*200 + 100
         
         skretch.add_box(Box(Point(x,y,0), h, w, d, color = random_color() ))
-
+        
     return skretch
 
     

@@ -99,7 +99,7 @@ def get_views(panorama_height, panorama_width, window_size=64, stride=8):
 
 
 class MultiDiffusion(nn.Module):
-    def __init__(self, device, control, scene1, scene2, model='2.0' , hf_key=None):
+    def __init__(self, device, control, scene1, scene2, model='2.0' , hf_key=None,src = None, dst = None, interpolate_k = 2):
         super().__init__()
 
         self.device = device
@@ -133,43 +133,47 @@ class MultiDiffusion(nn.Module):
         self.tokenizer = pipe.tokenizer
         self.text_encoder = pipe.text_encoder
         self.unet = pipe.unet
-        # self.scheduler1 = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
-        # self.scheduler2 = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
+        self.scheduler1 = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
+        self.scheduler2 = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 
-        self.scheduler1 = DDIMScheduler.from_pretrained(model_key, subfolder="scheduler")
-        self.scheduler2 = DDIMScheduler.from_pretrained(model_key, subfolder="scheduler")
+        # self.scheduler1 = DDIMScheduler.from_pretrained(model_key, subfolder="scheduler")
+        # self.scheduler2 = DDIMScheduler.from_pretrained(model_key, subfolder="scheduler")
 
 
         self.pipe = pipe
         self.controlnets = controlnets
 
 
-        print(f'[INFO] pairing scenes')
-        map1,map2 = scene1.connect(scene2)
+        if src is None or dst is None:
+            print(f'[INFO] pairing scenes')
+            map1,map2 = scene1.connect(scene2, interpolate_k = interpolate_k)
 
-        map1 = map1.astype(np.int)
-        map2 = map2.astype(np.int)
-        
-        ## convert np to torch, and move to device
-        ## the map is for the image space, so we need to convert it to the latent space (Is it how it is done?)
-        map1 = map1 // 8
-        map2 = map2 // 8
+            map1 = map1.astype(np.int)
+            map2 = map2.astype(np.int)
+            
+            ## convert np to torch, and move to device
+            ## the map is for the image space, so we need to convert it to the latent space (Is it how it is done?)
+            map1 = map1 // 8
+            map2 = map2 // 8
 
-        new_map1 = []
-        new_map2 = []
-        for i in range(map1.shape[1]):
-            val1 = tuple(map1[:,i])
-            val2 = tuple(map2[:,i])
-            if not val1 in new_map1 and not val2 in new_map2:
-                new_map1.append(val1)
-                new_map2.append(val2)
-                
-        map1 = np.asarray(new_map1).transpose()
-        map2 = np.asarray(new_map2).transpose()
+            new_map1 = []
+            new_map2 = []
+            for i in range(map1.shape[1]):
+                val1 = tuple(map1[:,i])
+                val2 = tuple(map2[:,i])
+                if not val1 in new_map1 and not val2 in new_map2:
+                    new_map1.append(val1)
+                    new_map2.append(val2)
+                    
+            map1 = np.asarray(new_map1).transpose()
+            map2 = np.asarray(new_map2).transpose()
 
-        self.map1 = torch.tensor(map1, dtype = torch.long).to(self.device)
-        self.map2 = torch.tensor(map2, dtype = torch.long).to(self.device)
-
+            self.map1 = torch.tensor(map1, dtype = torch.long).to(self.device)
+            self.map2 = torch.tensor(map2, dtype = torch.long).to(self.device)
+        else:
+            print(f'[INFO] using provided pairing')
+            self.map1 = torch.tensor(src.astype(np.int)//8, dtype = torch.long).to(self.device)
+            self.map2 = torch.tensor(dst.astype(np.int)//8, dtype = torch.long).to(self.device)
 
         ##eliminate repeating indexes from self.map1:
         ##self.map1 = torch.unique(self.map1, dim = 1)
@@ -479,6 +483,9 @@ class MultiDiffusion(nn.Module):
         # 8. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler1.order
 
+        ##force the latents to start at the same point
+        latents2[:,:,self.map2[0],self.map2[1]] = latents1[:,:,self.map1[0],self.map1[1]]
+
         with self.pipe.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
 
@@ -494,9 +501,12 @@ class MultiDiffusion(nn.Module):
                         scheduler = self.scheduler2
 
 
+
                     ##if latents has nan:
                     if torch.isnan(latents).any():
                         import pdb; pdb.set_trace()
+
+
                     ##import pdb; pdb.set_trace()
 
                     # expand the latents if we are doing classifier free guidance
@@ -527,6 +537,8 @@ class MultiDiffusion(nn.Module):
                         guess_mode=guess_mode,
                         return_dict=False,
                     )
+
+
 
                     if guess_mode and do_classifier_free_guidance:
                         # Infered ControlNet only for the conditional batch.
