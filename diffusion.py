@@ -64,7 +64,7 @@ def get_controls(control, sc):
             )
             mcond = Image.fromarray(sc.get_depth_map())
         else:
-            throw("Unknown controlnet")
+            raise Exception("Unknown control type")
             
         controlnets.append(controlnet)
         mconds.append(mcond)
@@ -100,7 +100,7 @@ def run_diffusion(scene , device = "cuda", prompt = None, model = "realistic", c
     return stamp_image, mconds
 
 
-def present(src, results):
+def present(src, results, img_name = "prespective_change_with_diffusion", format = "png"):
     n = len(results)
     assert(n==len(src))
     m = len(src[0]) + 1
@@ -123,9 +123,48 @@ def present(src, results):
         ax[i][m-1].grid(False)
         ax[i][m-1].axis('off')
     ## save tight
-    plt.savefig("images/prespective_change_with_diffusion.pdf", bbox_inches='tight')
-    plt.savefig("images/prespective_change_with_diffusion.png", bbox_inches='tight')
-    plt.show()
+
+    if isinstance(format, str):
+        format = [format]
+    for fmt in format:
+        plt.savefig(f"images/{img_name}.{fmt}", bbox_inches='tight')
+    ##plt.show()
+
+def display_map(sc1, sc2, src_map, dst_map, control, img_name_ext = "", format = "png"):
+    results = [np.zeros_like(sc1.get_seg_map())]
+
+    def expand_map(map):
+        map1 = map[0].cpu().numpy()*8
+        map2 = map[1].cpu().numpy()*8
+
+        ##expand to 8x8 map
+        map1 = np.repeat(map1, 64, axis=0)
+        map2 = np.repeat(map2, 64, axis=0)
+
+        map1_add = (np.arange(map1.shape[0]) % 8)
+        map2_add = ((np.arange(map2.shape[0]) // 8 ) % 8)
+
+        map1 = map1 + map1_add
+        map2 = map2 + map2_add
+        
+        return map1, map2
+
+
+    map1, map2 = expand_map(src_map.clone())
+    dmap1, dmap2 = expand_map(dst_map.clone())
+
+
+
+    img = sc1.get_seg_map().copy()
+    mapped_img = np.zeros_like(img)
+    mapped_img[dmap1, dmap2,:] = img[map1, map2,:]
+
+
+
+    results.append(mapped_img)
+    src = [[sc.get_seg_map(),sc.get_norm_map()] for sc in [sc1,sc2]] if 'normal' in control else [[sc.get_seg_map()] for sc in [sc1,sc2]] 
+
+    present(src,  results, img_name = f"maps_rank_{img_name_ext}", format = format)
 
 
 def run_img2img(scene , device = "cuda", prompt = None, model = "realistic", control = "seg", steps = 200, strength = 1.0):

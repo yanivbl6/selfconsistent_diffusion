@@ -139,7 +139,7 @@ class Quad():
 
     counter = 1
 
-    def __init__(self, p1, p2, p3, p4 , color = 'red', desc = 'plain', boxid = None, res = 1):
+    def __init__(self, p1, p2, p3, p4 , color = 'red', desc = 'plain', boxid = None, res = 1, background = False):
         self.p1 = p1
         self.p2 = p2
         self.p3 = p3
@@ -177,6 +177,7 @@ class Quad():
         
         v_norm = v1.cross(v2).normalize()
         self.v_norm = v_norm
+        self.background = background
 
     def __repr__(self):
         return f'Quad({self.p1}, {self.p2}, {self.p3}, {self.p4})'
@@ -191,6 +192,10 @@ class Quad():
         Returns:
         - dist: float, the minimum distance between this quadrilateral and the point p
         """
+
+        if self.background:
+            return np.inf
+
         d1 = p.dist(self.p1)
         d2 = p.dist(self.p2)
         d3 = p.dist(self.p3)
@@ -227,6 +232,8 @@ class Quad():
         p3 = self.p3.get_2d_coords(pov, direction, vision_angle, resolution_x, resolution_y, verbose)
         p4 = self.p4.get_2d_coords(pov, direction, vision_angle, resolution_x, resolution_y, verbose)
         
+
+        # mask = None
         if not  image is None:
             if forcecolor is None:
                 color = self.color
@@ -238,6 +245,9 @@ class Quad():
             ##line_aa = cv2.LINE_AA        
             pp = np.array([p1, p2, p3, p4])
             image = cv2.drawContours(image, [pp], 0, color, -1, line_aa)
+
+            # mask = np.zeros((resolution_x,resolution_y,3), dtype = np.uint8 )
+            # mask = cv2.drawContours(mask, [pp], 0, (1,1,1), -1, 0)
 
             if verbose == 1:
                 plt.imshow(image)
@@ -281,8 +291,21 @@ class Quad():
 
             new_mapping2 = cv2.warpPerspective(ptr_img2, transformation_matrix, (resolution_x, resolution_y))
 
+            ##change type to long
+            new_mapping2 = new_mapping2.astype(np.int)
+
+            # if not mask is None:
+            #     new_mapping =  (new_mapping1 + new_mapping2*256) * mask
+            new_mapping =  (new_mapping1 + new_mapping2*256)
             ## image only takes non zero values from tar
-            mapping = np.where(np.expand_dims(new_mapping1[:,:,0] == 0,2), mapping, new_mapping1 + new_mapping2*256)
+            mapping = np.where(np.expand_dims(new_mapping[:,:,0] == 0,2), mapping, new_mapping )
+
+            # if not mask is None:
+            #     mapping =  mapping * mask
+
+            # ## image only takes non zero values from tar
+            # mapping = np.where(np.expand_dims(new_mapping1[:,:,0] == 0,2), mapping, new_mapping1 + new_mapping2*256)
+
 
         
         if not normal_map is None and self.v_norm is not None:
@@ -757,8 +780,8 @@ class Scene():
         dst_x = list_of_connections[0]
         dst_y = list_of_connections[1]      
             
-        dst = np.array([dst_x,dst_y])        
-        src = np.array([src_x,src_y])
+        dst = np.array([dst_x,dst_y], dtype = np.long)        
+        src = np.array([src_x,src_y], dtype = np.long)
             
         ptr_img = np.zeros((shape_x, shape_y,3), dtype = np.uint8)
         src_idx = 1
@@ -768,8 +791,6 @@ class Scene():
 
         self.stamp(ptr_img, verbose = False, interpolate_k = interpolate_k)
         
-        src_idx = 0
-
         
         unstamped_img = sc_dst.unstamp(intensity = 1.0, verbose = False, decomp = decomp)
         
@@ -783,19 +804,19 @@ class Scene():
             plt.show()
 
 
-        src_x = (unstamped_img[:,:,1])[list_of_connections]*256
-        src_y = (unstamped_img[:,:,2])[list_of_connections]*256
+        src_x = (unstamped_img[:,:,1])[list_of_connections]
+        src_y = (unstamped_img[:,:,2])[list_of_connections]
 
         dst_x = list_of_connections[0]
         dst_y = list_of_connections[1]   
 
-        dst2 = np.array([dst_x,dst_y])        
+        dst2 = np.array([dst_x,dst_y], dtype = np.long)        
 
-        src2 = np.array([src_x,src_y])
+        src2 = np.array([src_x,src_y], dtype = np.long)
         assert(np.all(src.shape == src2.shape))
         assert(np.all(dst == dst2))
 
-        src = src + src2
+        src = src + src2*256
 
         return src, dst
 
@@ -844,6 +865,25 @@ def add_skies(skretch, segments=1, Z = 300,color = (175,175,255)):
             flat.v_norm = None
 
             skretch.add_flat(flat)
+    return skretch
+
+def add_ground(skretch, segments=1, x= 0, y= 0, Z = 0,color = (50,50,50)):
+
+    size = 2**8//segments
+    for i in range(segments):
+        for j in range(segments):
+            flat = Quad(Point(x+size*i,y+size*j,Z), 
+                        Point(x+size*(i+1),y+size*j,Z), 
+                        Point(x+size*(i+1),y+size*(j+1),Z), 
+                        Point(x+size*i,y+size*(j+1),Z), 
+                        color = color, background = True)
+
+            
+            flat.v_norm = None
+
+            skretch.add_flat(flat)
+
+    
     return skretch
 
 

@@ -1,0 +1,1 @@
+python  dist_multi_controlnet.py --dist-url tcp://132.69.32.82:9000 --dist-backend nccl --multiprocessing-distributed --world-size 1 --rank 0 -a metro -N 30 --add_skies --model deliberate --num_inference_steps 200 --max_pairing_steps -20 --pairing_strength 0.5 --norm_conditioning_scale 0.3 --resolution 1024 -k 0
